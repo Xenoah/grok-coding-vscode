@@ -1,0 +1,16 @@
+.github/**
+.vscode/**
+.git/**
+.gitignore
+src/**
+node_modules/**
+coverage/**
+.nyc_output/**
+*.map
+*.log
+.DS_Store
+esbuild.mjs
+tsconfig.json
+package-lock.json
+*.vsix
+*-source.zip

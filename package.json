@@ -1,0 +1,121 @@
+{
+  "name": "grok-code-agent",
+  "displayName": "Grok Code Agent",
+  "description": "Add xAI Grok 4.5 to VS Code Chat through the native language model provider API.",
+  "version": "0.1.0",
+  "publisher": "local-vsix",
+  "license": "MIT",
+  "homepage": "https://github.com/Xenoah/grok-coding-vscode#readme",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Xenoah/grok-coding-vscode.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Xenoah/grok-coding-vscode/issues"
+  },
+  "engines": {
+    "vscode": "^1.104.0"
+  },
+  "categories": [
+    "AI",
+    "Chat"
+  ],
+  "keywords": [
+    "xai",
+    "grok",
+    "agent",
+    "coding",
+    "chat",
+    "byok"
+  ],
+  "main": "./dist/extension.js",
+  "extensionKind": [
+    "ui"
+  ],
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": true,
+      "description": "This extension only provides a language model. Workspace operations are performed by VS Code Chat, subject to its availability, settings, and approval policy."
+    },
+    "virtualWorkspaces": true
+  },
+  "contributes": {
+    "languageModelChatProviders": [
+      {
+        "vendor": "grok-code-agent-xai",
+        "displayName": "xAI Grok",
+        "managementCommand": "grokCode.manageApiKey"
+      }
+    ],
+    "commands": [
+      {
+        "command": "grokCode.manageApiKey",
+        "title": "APIキーを設定",
+        "category": "Grok Code"
+      },
+      {
+        "command": "grokCode.clearApiKey",
+        "title": "APIキーを削除",
+        "category": "Grok Code"
+      },
+      {
+        "command": "grokCode.openChat",
+        "title": "Chatを開く",
+        "category": "Grok Code"
+      }
+    ],
+    "configuration": {
+      "title": "Grok Code Agent",
+      "properties": {
+        "grokCode.reasoningEffort": {
+          "type": "string",
+          "enum": [
+            "low",
+            "medium",
+            "high"
+          ],
+          "enumDescriptions": [
+            "高速。通常のコーディングエージェント向け。",
+            "速度と推論のバランス。",
+            "複雑な設計・調査向け。応答開始が遅くなる場合があります。"
+          ],
+          "default": "low",
+          "scope": "window",
+          "description": "Grok 4.5の推論強度。"
+        },
+        "grokCode.requestTimeoutMs": {
+          "type": "number",
+          "default": 360000,
+          "minimum": 10000,
+          "maximum": 3600000,
+          "scope": "machine",
+          "description": "xAI APIリクエストのタイムアウト（ミリ秒）。"
+        },
+        "grokCode.maxOutputTokens": {
+          "type": "number",
+          "default": 32768,
+          "minimum": 1024,
+          "maximum": 32768,
+          "scope": "window",
+          "description": "1応答で生成できる最大トークン数。"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "build": "node esbuild.mjs --production",
+    "watch": "node esbuild.mjs --watch",
+    "check": "tsc --noEmit",
+    "test": "node --import tsx --test src/test/*.test.ts",
+    "verify": "npm run check && npm test && npm run build",
+    "package": "npm run verify && vsce package --no-dependencies"
+  },
+  "devDependencies": {
+    "@types/node": "22.15.3",
+    "@types/vscode": "1.104.0",
+    "@vscode/vsce": "3.9.2",
+    "esbuild": "0.28.1",
+    "tsx": "4.20.3",
+    "typescript": "5.8.3"
+  }
+}

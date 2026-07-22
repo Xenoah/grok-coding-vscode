@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- Added a dedicated Grok sidebar with persistent chat history.
+- Added streaming responses, stop generation, chat creation, switching, and deletion.
+- Kept VS Code's native Chat available for agent tools, approvals, and diffs.
+
 ## 0.1.0
 
 - xAI Grok 4.5をVS Code標準Chatのモデルとして登録

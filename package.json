@@ -40,6 +40,25 @@
     "virtualWorkspaces": true
   },
   "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "grok-code-container",
+          "title": "Grok",
+          "icon": "resources/grok.svg"
+        }
+      ]
+    },
+    "views": {
+      "grok-code-container": [
+        {
+          "id": "grokCode.chatView",
+          "name": "Grok",
+          "type": "webview",
+          "contextualTitle": "Grok Code"
+        }
+      ]
+    },
     "languageModelChatProviders": [
       {
         "vendor": "grok-code-agent-xai",
@@ -60,10 +79,30 @@
       },
       {
         "command": "grokCode.openChat",
-        "title": "Chatを開く",
+        "title": "専用チャットを開く",
+        "category": "Grok Code"
+      },
+      {
+        "command": "grokCode.newChat",
+        "title": "新しいチャット",
+        "category": "Grok Code",
+        "icon": "$(add)"
+      },
+      {
+        "command": "grokCode.openNativeChat",
+        "title": "VS Code Agentで開く",
         "category": "Grok Code"
       }
     ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "grokCode.newChat",
+          "when": "view == grokCode.chatView",
+          "group": "navigation"
+        }
+      ]
+    },
     "configuration": {
       "title": "Grok Code Agent",
       "properties": {

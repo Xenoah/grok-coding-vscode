@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
 
+import { GrokChatViewProvider } from './chat/grokChatViewProvider';
 import { getGrokConfiguration } from './config';
 import { ApiKeyManager } from './credentials';
 import { GrokLanguageModelProvider } from './provider/grokProvider';
@@ -9,6 +10,7 @@ const PROVIDER_ID = 'grok-code-agent-xai';
 
 export function activate(context: vscode.ExtensionContext): void {
   const apiKeys = new ApiKeyManager(context.secrets);
+  const chatViewProvider = new GrokChatViewProvider(context, apiKeys);
   const provider = new GrokLanguageModelProvider({
     getApiKey: ({ silent }) => apiKeys.get(silent),
     getSettings: () => {
@@ -32,9 +34,16 @@ export function activate(context: vscode.ExtensionContext): void {
 
   context.subscriptions.push(
     apiKeys,
+    chatViewProvider,
     provider,
     vscode.lm.registerLanguageModelChatProvider(PROVIDER_ID, provider),
-    apiKeys.onDidChange(() => provider.refreshModels()),
+    vscode.window.registerWebviewViewProvider(GrokChatViewProvider.viewType, chatViewProvider, {
+      webviewOptions: { retainContextWhenHidden: true }
+    }),
+    apiKeys.onDidChange(() => {
+      provider.refreshModels();
+      chatViewProvider.refresh();
+    }),
     vscode.workspace.onDidChangeConfiguration(event => {
       if (event.affectsConfiguration('grokCode')) {
         provider.refreshModels();
@@ -42,7 +51,12 @@ export function activate(context: vscode.ExtensionContext): void {
     }),
     vscode.commands.registerCommand('grokCode.manageApiKey', () => apiKeys.manage()),
     vscode.commands.registerCommand('grokCode.clearApiKey', () => apiKeys.clear()),
-    vscode.commands.registerCommand('grokCode.openChat', () =>
+    vscode.commands.registerCommand('grokCode.openChat', () => chatViewProvider.show()),
+    vscode.commands.registerCommand('grokCode.newChat', async () => {
+      await chatViewProvider.newChat();
+      await chatViewProvider.show();
+    }),
+    vscode.commands.registerCommand('grokCode.openNativeChat', () =>
       vscode.commands.executeCommand('workbench.action.chat.open')
     )
   );

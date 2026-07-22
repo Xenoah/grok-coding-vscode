@@ -7,14 +7,24 @@ const elements = {
   apiNotice: document.getElementById('apiNotice'),
   prompt: document.getElementById('prompt'),
   send: document.getElementById('send'),
-  model: document.getElementById('model')
+  model: document.getElementById('model'),
+  modelButton: document.getElementById('modelButton'),
+  modelMenu: document.getElementById('modelMenu'),
+  modelList: document.getElementById('modelList'),
+  moreButton: document.getElementById('moreButton'),
+  moreMenu: document.getElementById('moreMenu'),
+  instructionsButton: document.getElementById('instructionsButton'),
+  instructionDot: document.getElementById('instructionDot'),
+  thinkingSpinner: document.getElementById('thinkingSpinner'),
+  instructionsDialog: document.getElementById('instructionsDialog'),
+  instructionsInput: document.getElementById('instructionsInput')
 };
 let state = {
   sessions: [],
   activeSessionId: '',
   apiConfigured: false,
   busy: false,
-  model: 'Grok'
+  models: []
 };
 let showAllChats = false;
 
@@ -45,6 +55,42 @@ elements.prompt.addEventListener('keydown', event => {
   }
 });
 elements.prompt.addEventListener('input', resizePrompt);
+elements.modelButton.addEventListener('click', event => {
+  event.stopPropagation();
+  togglePopover(elements.modelMenu);
+});
+elements.moreButton.addEventListener('click', event => {
+  event.stopPropagation();
+  togglePopover(elements.moreMenu);
+});
+elements.instructionsButton.addEventListener('click', openInstructionsDialog);
+document.getElementById('moreInstructions').addEventListener('click', openInstructionsDialog);
+document.getElementById('moreApiKey').addEventListener('click', () => {
+  closePopovers();
+  vscode.postMessage({ type: 'configureApiKey' });
+});
+document.getElementById('moreNativeChat').addEventListener('click', () => {
+  closePopovers();
+  vscode.postMessage({ type: 'openNativeChat' });
+});
+document.getElementById('moreSettings').addEventListener('click', () => {
+  closePopovers();
+  vscode.postMessage({ type: 'openSettings' });
+});
+document.getElementById('cancelInstructions').addEventListener('click', closeInstructionsDialog);
+document.getElementById('saveInstructions').addEventListener('click', saveInstructions);
+elements.instructionsDialog.addEventListener('click', event => {
+  if (event.target === elements.instructionsDialog) {
+    closeInstructionsDialog();
+  }
+});
+document.addEventListener('click', closePopovers);
+document.addEventListener('keydown', event => {
+  if (event.key === 'Escape') {
+    closePopovers();
+    closeInstructionsDialog();
+  }
+});
 
 window.addEventListener('message', event => {
   const message = event.data;
@@ -89,15 +135,86 @@ function resizePrompt() {
   elements.prompt.style.height = `${Math.min(elements.prompt.scrollHeight, 160)}px`;
 }
 
+function togglePopover(popover) {
+  if (state.busy) {
+    return;
+  }
+  const shouldOpen = popover.classList.contains('hidden');
+  closePopovers();
+  popover.classList.toggle('hidden', !shouldOpen);
+}
+
+function closePopovers() {
+  elements.modelMenu.classList.add('hidden');
+  elements.moreMenu.classList.add('hidden');
+}
+
+function getActiveSession() {
+  return state.sessions.find(item => item.id === state.activeSessionId);
+}
+
+function openInstructionsDialog() {
+  if (state.busy) {
+    return;
+  }
+  closePopovers();
+  elements.instructionsInput.value = getActiveSession()?.instructions || '';
+  elements.instructionsDialog.classList.remove('hidden');
+  requestAnimationFrame(() => elements.instructionsInput.focus());
+}
+
+function closeInstructionsDialog() {
+  elements.instructionsDialog.classList.add('hidden');
+}
+
+function saveInstructions() {
+  vscode.postMessage({ type: 'setInstructions', instructions: elements.instructionsInput.value });
+  closeInstructionsDialog();
+}
+
 function render() {
   renderHistory();
   renderConversation();
+  renderModelMenu();
   elements.apiNotice.classList.toggle('hidden', state.apiConfigured);
-  elements.model.textContent = `${state.model}${state.busy ? ' · 生成中' : ''}`;
+  const session = getActiveSession();
+  const selectedModel = state.models.find(model => model.id === session?.modelId);
+  elements.model.textContent = selectedModel?.name || session?.modelId || 'Grok';
+  elements.instructionDot.classList.toggle('hidden', !session?.instructions);
+  elements.thinkingSpinner.classList.toggle('hidden', !state.busy);
+  elements.modelButton.disabled = state.busy;
+  elements.moreButton.disabled = state.busy;
+  elements.instructionsButton.disabled = state.busy;
   elements.send.classList.toggle('stop', state.busy);
   elements.send.textContent = state.busy ? '■' : '↑';
   elements.send.title = state.busy ? '停止' : '送信';
   elements.send.setAttribute('aria-label', state.busy ? '生成を停止' : '送信');
+}
+
+function renderModelMenu() {
+  elements.modelList.replaceChildren();
+  const session = getActiveSession();
+  for (const model of state.models) {
+    const button = document.createElement('button');
+    button.className = `menu-item model-item${model.id === session?.modelId ? ' selected' : ''}`;
+    button.setAttribute('role', 'menuitemradio');
+    button.setAttribute('aria-checked', String(model.id === session?.modelId));
+    const text = document.createElement('span');
+    text.className = 'model-option-text';
+    const name = document.createElement('strong');
+    name.textContent = model.name;
+    const id = document.createElement('small');
+    id.textContent = model.id;
+    text.append(name, id);
+    const check = document.createElement('span');
+    check.textContent = model.id === session?.modelId ? '✓' : '';
+    button.append(text, check);
+    button.addEventListener('click', () => {
+      closePopovers();
+      vscode.postMessage({ type: 'selectModel', modelId: model.id });
+    });
+    elements.modelList.append(button);
+  }
 }
 
 function renderHistory() {
@@ -167,14 +284,11 @@ function renderConversation() {
     renderMessageContent(content, message);
     article.append(role, content);
     if (message.status === 'streaming' && !message.content) {
-      const typing = document.createElement('span');
-      typing.className = 'typing';
-      typing.append(
-        document.createElement('i'),
-        document.createElement('i'),
-        document.createElement('i')
-      );
-      content.append(typing);
+      const spinner = document.createElement('span');
+      spinner.className = 'spinner message-spinner';
+      spinner.title = '思考中';
+      spinner.setAttribute('aria-label', '思考中');
+      content.append(spinner);
     }
     elements.conversation.append(article);
   }

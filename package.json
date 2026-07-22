@@ -2,7 +2,7 @@
   "name": "grok-code-agent",
   "displayName": "Grok Code Agent",
   "description": "Add xAI Grok 4.5 to VS Code Chat through the native language model provider API.",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "publisher": "local-vsix",
   "license": "MIT",
   "homepage": "https://github.com/Xenoah/grok-coding-vscode#readme",

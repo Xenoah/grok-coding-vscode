@@ -42,7 +42,7 @@ export function activate(context: vscode.ExtensionContext): void {
     }),
     apiKeys.onDidChange(() => {
       provider.refreshModels();
-      chatViewProvider.refresh();
+      chatViewProvider.handleApiKeyChange();
     }),
     vscode.workspace.onDidChangeConfiguration(event => {
       if (event.affectsConfiguration('grokCode')) {

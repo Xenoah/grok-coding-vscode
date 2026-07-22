@@ -340,6 +340,39 @@ export class XAIClient {
     return result;
   }
 
+  /** List model IDs visible to the configured xAI API key. */
+  async listModels(options: XAIRequestOptions = {}): Promise<string[]> {
+    abortIfRequested(options.signal);
+    let response: Response;
+    try {
+      response = await this.fetchImpl(`${this.baseUrl}/models`, {
+        method: "GET",
+        headers: {
+          ...this.extraHeaders,
+          Accept: "application/json",
+          Authorization: `Bearer ${this.apiKey}`,
+        },
+        signal: options.signal,
+      });
+    } catch (error) {
+      abortIfRequested(options.signal);
+      throw error;
+    }
+
+    if (!response.ok) {
+      throw await this.httpError(response, options.signal);
+    }
+    const value = await this.readJsonResponse(response, options.signal);
+    if (!isRecord(value) || !Array.isArray(value.data)) {
+      throw protocolError("xAI returned an invalid model list", value);
+    }
+
+    const ids = value.data
+      .map(item => (isRecord(item) ? optionalString(item.id) : undefined))
+      .filter((id): id is string => Boolean(id?.trim()));
+    return [...new Set(ids)];
+  }
+
   /**
    * Low-level streaming API. Each yielded update is normalized, while unknown
    * xAI events remain available as kind:"event". The generator's return value

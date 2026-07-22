@@ -439,4 +439,29 @@ describe('XAIClient', () => {
       /non-terminal JSON response status/
     );
   });
+
+  it('lists model IDs available to the API key', async () => {
+    let authorization = '';
+    const client = new XAIClient({
+      apiKey: 'xai-test-secret-key',
+      fetch: async (_input, init) => {
+        authorization = new Headers(init?.headers).get('authorization') ?? '';
+        return new Response(
+          JSON.stringify({
+            object: 'list',
+            data: [
+              { id: 'grok-4.5', object: 'model' },
+              { id: 'grok-4.3', object: 'model' },
+              { id: 'grok-4.5', object: 'model' },
+              { object: 'model' }
+            ]
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } }
+        );
+      }
+    });
+
+    assert.deepEqual(await client.listModels(), ['grok-4.5', 'grok-4.3']);
+    assert.equal(authorization, 'Bearer xai-test-secret-key');
+  });
 });

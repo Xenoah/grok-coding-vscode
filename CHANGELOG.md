@@ -1,10 +1,12 @@
 # Changelog
 
-## Unreleased
+## 0.2.0 - 2026-07-22
 
 - Added a dedicated Grok sidebar with persistent chat history.
 - Added streaming responses, stop generation, chat creation, switching, and deletion.
 - Kept VS Code's native Chat available for agent tools, approvals, and diffs.
+- Fixed dedicated chats stopping after the first response by preserving encrypted reasoning state locally for `store: false` follow-up turns.
+- Added thinking spinners, account-aware model selection, per-chat instructions, and an overflow menu.
 
 ## 0.1.0
 

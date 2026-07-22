@@ -1,6 +1,11 @@
 import { randomUUID } from 'node:crypto';
 import * as vscode from 'vscode';
 
+import {
+  buildConversationInput,
+  continuationFromResponse,
+  readContinuation
+} from './conversationState';
 import { getGrokConfiguration } from '../config';
 import type { ApiKeyManager } from '../credentials';
 import { DEFAULT_GROK_MODELS } from '../provider/modelCatalog';
@@ -11,6 +16,12 @@ const CHAT_STATE_KEY = 'grokCode.chatState.v1';
 const MAX_SESSIONS = 50;
 const MAX_MESSAGES_PER_SESSION = 100;
 const MAX_INPUT_LENGTH = 50_000;
+const MAX_INSTRUCTIONS_LENGTH = 20_000;
+const DEFAULT_MODEL_ID = DEFAULT_GROK_MODELS[0]!.apiModelId;
+const DEFAULT_MODEL_NAME = DEFAULT_GROK_MODELS[0]!.name;
+const BASE_INSTRUCTIONS =
+  'You are Grok Code, a concise coding assistant inside VS Code. ' +
+  "Reply in the user's language. Use Markdown when it improves readability.";
 
 type ChatRole = 'user' | 'assistant';
 type ChatMessageStatus = 'complete' | 'streaming' | 'error';
@@ -29,6 +40,14 @@ interface ChatSession {
   createdAt: number;
   updatedAt: number;
   messages: ChatMessage[];
+  continuation: XAIInputItem[];
+  modelId: string;
+  instructions: string;
+}
+
+interface ChatModelOption {
+  id: string;
+  name: string;
 }
 
 interface StoredChatState {
@@ -51,8 +70,11 @@ type WebviewMessage =
   | { type: 'newChat' }
   | { type: 'selectChat'; sessionId?: unknown }
   | { type: 'deleteChat'; sessionId?: unknown }
+  | { type: 'selectModel'; modelId?: unknown }
+  | { type: 'setInstructions'; instructions?: unknown }
   | { type: 'configureApiKey' }
-  | { type: 'openNativeChat' };
+  | { type: 'openNativeChat' }
+  | { type: 'openSettings' };
 
 export class GrokChatViewProvider implements vscode.WebviewViewProvider, vscode.Disposable {
   static readonly viewType = 'grokCode.chatView';
@@ -61,6 +83,9 @@ export class GrokChatViewProvider implements vscode.WebviewViewProvider, vscode.
   private activeSessionId: string;
   private view: vscode.WebviewView | undefined;
   private activeRequest: ActiveRequest | undefined;
+  private availableModels: ChatModelOption[] = [
+    { id: DEFAULT_MODEL_ID, name: DEFAULT_MODEL_NAME }
+  ];
 
   constructor(
     private readonly context: vscode.ExtensionContext,
@@ -69,6 +94,9 @@ export class GrokChatViewProvider implements vscode.WebviewViewProvider, vscode.
     const stored = readStoredState(context.globalState.get<unknown>(CHAT_STATE_KEY));
     this.sessions = stored.sessions;
     this.activeSessionId = stored.activeSessionId;
+    this.availableModels = [...new Set([DEFAULT_MODEL_ID, ...this.sessions.map(session => session.modelId)])]
+      .map(id => ({ id, name: modelDisplayName(id) }))
+      .sort(compareModels);
   }
 
   resolveWebviewView(view: vscode.WebviewView): void {
@@ -106,8 +134,12 @@ export class GrokChatViewProvider implements vscode.WebviewViewProvider, vscode.
     await this.persistAndPostState();
   }
 
-  refresh(): void {
-    void this.postState();
+  handleApiKeyChange(): void {
+    for (const session of this.sessions) {
+      session.continuation = [];
+    }
+    void this.persistAndPostState();
+    void this.loadAvailableModels();
   }
 
   dispose(): void {
@@ -118,6 +150,7 @@ export class GrokChatViewProvider implements vscode.WebviewViewProvider, vscode.
     switch (message.type) {
       case 'ready':
         await this.postState();
+        void this.loadAvailableModels();
         break;
       case 'send':
         if (typeof message.text === 'string') {
@@ -140,12 +173,28 @@ export class GrokChatViewProvider implements vscode.WebviewViewProvider, vscode.
           await this.deleteChat(message.sessionId);
         }
         break;
+      case 'selectModel':
+        if (typeof message.modelId === 'string') {
+          await this.selectModel(message.modelId);
+        }
+        break;
+      case 'setInstructions':
+        if (typeof message.instructions === 'string') {
+          await this.setInstructions(message.instructions);
+        }
+        break;
       case 'configureApiKey':
         await this.apiKeys.manage();
         await this.postState();
         break;
       case 'openNativeChat':
         await vscode.commands.executeCommand('workbench.action.chat.open');
+        break;
+      case 'openSettings':
+        await vscode.commands.executeCommand(
+          'workbench.action.openSettings',
+          '@ext:local-vsix.grok-code-agent'
+        );
         break;
     }
   }
@@ -176,6 +225,61 @@ export class GrokChatViewProvider implements vscode.WebviewViewProvider, vscode.
     await this.persistAndPostState();
   }
 
+  private async selectModel(modelId: string): Promise<void> {
+    if (this.activeRequest || !this.availableModels.some(model => model.id === modelId)) {
+      return;
+    }
+    const session = this.getActiveSession();
+    if (session.modelId === modelId) {
+      return;
+    }
+    session.modelId = modelId;
+    session.continuation = [];
+    session.updatedAt = Date.now();
+    await this.persistAndPostState();
+  }
+
+  private async setInstructions(rawInstructions: string): Promise<void> {
+    if (this.activeRequest) {
+      return;
+    }
+    const instructions = rawInstructions.trim();
+    if (instructions.length > MAX_INSTRUCTIONS_LENGTH) {
+      void vscode.window.showWarningMessage(
+        `指示は${MAX_INSTRUCTIONS_LENGTH.toLocaleString()}文字以内にしてください。`
+      );
+      return;
+    }
+    const session = this.getActiveSession();
+    if (session.instructions === instructions) {
+      return;
+    }
+    session.instructions = instructions;
+    session.continuation = [];
+    session.updatedAt = Date.now();
+    await this.persistAndPostState();
+  }
+
+  private async loadAvailableModels(): Promise<void> {
+    const apiKey = await this.apiKeys.get(true);
+    if (!apiKey) {
+      return;
+    }
+    try {
+      const client = new XAIClient({ apiKey, baseUrl: 'https://api.x.ai/v1' });
+      const ids = await client.listModels();
+      const selectedIds = this.sessions.map(session => session.modelId);
+      const uniqueIds = [...new Set([DEFAULT_MODEL_ID, ...selectedIds, ...ids.filter(isChatModelId)])];
+      this.availableModels = uniqueIds
+        .slice(0, 50)
+        .map(id => ({ id, name: modelDisplayName(id) }))
+        .sort(compareModels);
+      await this.postState();
+    } catch {
+      // Keep the default model available if this account cannot list models.
+    }
+  }
+
   private async sendMessage(rawText: string): Promise<void> {
     const text = rawText.trim();
     if (!text || this.activeRequest) {
@@ -195,6 +299,7 @@ export class GrokChatViewProvider implements vscode.WebviewViewProvider, vscode.
     }
 
     const session = this.getActiveSession();
+    const previousMessages = [...session.messages];
     const now = Date.now();
     const userMessage: ChatMessage = {
       id: randomUUID(),
@@ -208,11 +313,7 @@ export class GrokChatViewProvider implements vscode.WebviewViewProvider, vscode.
       session.title = createTitle(text);
     }
 
-    const requestInput = session.messages.map<XAIInputItem>(message => ({
-      type: 'message',
-      role: message.role,
-      content: message.content
-    }));
+    const requestInput = buildConversationInput(session.continuation, previousMessages, text);
     const assistantMessage: ChatMessage = {
       id: randomUUID(),
       role: 'assistant',
@@ -246,16 +347,18 @@ export class GrokChatViewProvider implements vscode.WebviewViewProvider, vscode.
         apiKey,
         baseUrl: 'https://api.x.ai/v1',
         defaultStore: false,
-        includeEncryptedReasoning: false
+        includeEncryptedReasoning: true
       });
       const response = await client.streamResponse(
         {
-          model: DEFAULT_GROK_MODELS[0]!.apiModelId,
+          model: session.modelId,
           input: requestInput,
-          instructions:
-            'You are Grok Code, a concise coding assistant inside VS Code. ' +
-            "Reply in the user's language. Use Markdown when it improves readability.",
-          reasoning: { effort: configuration.reasoningEffort },
+          instructions: session.instructions
+            ? `${BASE_INSTRUCTIONS}\n\nAdditional user instructions:\n${session.instructions}`
+            : BASE_INSTRUCTIONS,
+          ...(session.modelId.includes('non-reasoning')
+            ? {}
+            : { reasoning: { effort: configuration.reasoningEffort } }),
           max_output_tokens: configuration.maxOutputTokens,
           store: false
         },
@@ -279,6 +382,7 @@ export class GrokChatViewProvider implements vscode.WebviewViewProvider, vscode.
       if (!assistantMessage.content) {
         assistantMessage.content = extractResponseText(response);
       }
+      session.continuation = continuationFromResponse(response);
       assistantMessage.status = 'complete';
     } catch (error) {
       if (request.stopped) {
@@ -353,10 +457,18 @@ export class GrokChatViewProvider implements vscode.WebviewViewProvider, vscode.
     await view.webview.postMessage({
       type: 'state',
       activeSessionId: this.activeSessionId,
-      sessions: this.sessions,
+      sessions: this.sessions.map(session => ({
+        id: session.id,
+        title: session.title,
+        createdAt: session.createdAt,
+        updatedAt: session.updatedAt,
+        messages: session.messages,
+        modelId: session.modelId,
+        instructions: session.instructions
+      })),
       apiConfigured,
       busy: Boolean(this.activeRequest),
-      model: DEFAULT_GROK_MODELS[0]!.name
+      models: this.availableModels
     });
   }
 }
@@ -368,7 +480,10 @@ function createSession(): ChatSession {
     title: '新しいチャット',
     createdAt: now,
     updatedAt: now,
-    messages: []
+    messages: [],
+    continuation: [],
+    modelId: DEFAULT_MODEL_ID,
+    instructions: ''
   };
 }
 
@@ -408,7 +523,16 @@ function readSession(value: unknown): ChatSession | undefined {
     title: typeof value.title === 'string' && value.title.trim() ? value.title : '新しいチャット',
     createdAt: typeof value.createdAt === 'number' ? value.createdAt : now,
     updatedAt: typeof value.updatedAt === 'number' ? value.updatedAt : now,
-    messages
+    messages,
+    continuation: readContinuation(value.continuation),
+    modelId:
+      typeof value.modelId === 'string' && value.modelId.length > 0 && value.modelId.length <= 200
+        ? value.modelId
+        : DEFAULT_MODEL_ID,
+    instructions:
+      typeof value.instructions === 'string'
+        ? value.instructions.slice(0, MAX_INSTRUCTIONS_LENGTH)
+        : ''
   };
 }
 
@@ -467,6 +591,40 @@ function formatError(error: unknown): string {
   return error instanceof Error ? error.message : '不明なエラーが発生しました。';
 }
 
+function isChatModelId(id: string): boolean {
+  const normalized = id.toLowerCase();
+  return (
+    normalized.startsWith('grok-') &&
+    !/(imagine|image|video|voice|audio|tts|embedding)/.test(normalized)
+  );
+}
+
+function modelDisplayName(id: string): string {
+  if (id === DEFAULT_MODEL_ID) {
+    return DEFAULT_MODEL_NAME;
+  }
+  if (id === 'grok-build-0.1') {
+    return 'Grok Build 0.1';
+  }
+  return id
+    .split('-')
+    .map(part => {
+      if (part === 'grok') return 'Grok';
+      if (part === 'multi') return 'Multi';
+      if (part === 'agent') return 'Agent';
+      if (part === 'reasoning') return 'Reasoning';
+      if (part === 'non') return 'Non';
+      return part;
+    })
+    .join(' ');
+}
+
+function compareModels(left: ChatModelOption, right: ChatModelOption): number {
+  if (left.id === DEFAULT_MODEL_ID) return -1;
+  if (right.id === DEFAULT_MODEL_ID) return 1;
+  return left.name.localeCompare(right.name, 'en', { numeric: true });
+}
+
 function createWebviewHtml(webview: vscode.Webview, extensionUri: vscode.Uri): string {
   const cssUri = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'media', 'chat.css'));
   const scriptUri = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'media', 'chat.js'));
@@ -497,13 +655,38 @@ function createWebviewHtml(webview: vscode.Webview, extensionUri: vscode.Uri): s
     <section class="conversation" id="conversation" aria-live="polite"></section>
     <div class="api-notice hidden" id="apiNotice"><span>xAI APIキーが未設定です</span><button id="configureApiKey">設定</button></div>
     <div class="composer-wrap">
+      <div class="popover hidden" id="modelMenu" role="menu" aria-label="モデル選択">
+        <div class="popover-title">モデル</div>
+        <div id="modelList"></div>
+      </div>
+      <div class="popover hidden" id="moreMenu" role="menu" aria-label="その他の操作">
+        <div class="popover-title">その他</div>
+        <button class="menu-item" id="moreInstructions" role="menuitem"><span>指示を編集</span><span>›</span></button>
+        <button class="menu-item" id="moreApiKey" role="menuitem"><span>APIキー設定</span><span>⌘</span></button>
+        <button class="menu-item" id="moreNativeChat" role="menuitem"><span>VS Code Agentで開く</span><span>⌁</span></button>
+        <button class="menu-item" id="moreSettings" role="menuitem"><span>拡張機能の設定</span><span>⚙</span></button>
+      </div>
       <div class="composer">
         <textarea id="prompt" rows="1" maxlength="${MAX_INPUT_LENGTH}" placeholder="Grokにメッセージを送信" aria-label="メッセージ"></textarea>
         <div class="composer-footer">
-          <span class="model" id="model">Grok</span>
+          <button class="composer-action plus" id="moreButton" title="その他" aria-label="その他">＋</button>
+          <button class="composer-action model" id="modelButton" title="モデルを選択"><span id="model">Grok</span><span class="down">⌄</span></button>
+          <button class="composer-action instructions" id="instructionsButton" title="指示を編集"><span class="instruction-dot hidden" id="instructionDot"></span>指示</button>
+          <span class="spinner footer-spinner hidden" id="thinkingSpinner" title="思考中" aria-label="思考中"></span>
           <button class="send" id="send" title="送信" aria-label="送信">↑</button>
         </div>
       </div>
+    </div>
+    <div class="dialog-backdrop hidden" id="instructionsDialog">
+      <section class="dialog" role="dialog" aria-modal="true" aria-labelledby="instructionsTitle">
+        <h2 id="instructionsTitle">このチャットへの指示</h2>
+        <p>回答スタイルや前提条件を指定できます。変更すると次の返信から反映されます。</p>
+        <textarea class="instructions-input" id="instructionsInput" maxlength="${MAX_INSTRUCTIONS_LENGTH}" placeholder="例: 常に日本語で、コード例を先に示してください"></textarea>
+        <div class="dialog-actions">
+          <button class="secondary-button" id="cancelInstructions">キャンセル</button>
+          <button class="primary-button" id="saveInstructions">保存</button>
+        </div>
+      </section>
     </div>
   </main>
   <script src="${scriptUri}"></script>
